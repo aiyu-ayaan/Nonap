@@ -1,0 +1,236 @@
+# Automated release, driven by a marker at the START of a commit subject on master.
+# Rules: docs/RELEASE.md. Version maths: scripts/release-version.mjs.
+#
+#   !alpha  (nothing released) -> 0.0.1-alpha.1     !fix    1.4.2 -> 1.4.3
+#   !alpha  0.0.1-alpha.1      -> 0.0.1-alpha.2     !feat   1.4.2 -> 1.5.0
+#   !beta   0.0.1-alpha.3      -> 0.0.1-beta.1      !major  1.4.2 -> 2.0.0
+#   !stable 0.0.1-beta.2       -> 0.0.1
+#
+# Two steps:
+#   1. A marker on master opens a release PR: version bumped, CHANGELOG entry written.
+#      Nothing is published.
+#   2. Merging that PR releases: npm publish (dist-tag = channel), then the git tag and
+#      the GitHub Release.
+#
+# Run the workflow by hand with mode `release` to retry a release that failed part-way.
+
+name: Release
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'pr = open the release PR; release = publish the version master carries'
+        required: true
+        default: pr
+        type: choice
+        options: [pr, release]
+      marker:
+        description: 'Release type (pr mode only)'
+        default: alpha
+        type: choice
+        options: [alpha, beta, stable, fix, feat, major]
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write # npm provenance
+
+# Never two at once: the second would compute its version from a state the first is changing.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      marker: ${{ steps.plan.outputs.marker }}
+      version: ${{ steps.plan.outputs.version }}
+      previous: ${{ steps.plan.outputs.previous }}
+      channel: ${{ steps.plan.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/release-version.mjs --check
+
+      - name: Plan
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          MODE: ${{ inputs.mode }}
+          MARKER: ${{ inputs.marker }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          current="$(node -p "require('./package.json').version")"
+          # The last release, or 0.0.0 when there is none: the first !alpha is then 0.0.1-alpha.1.
+          previous="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+          previous="${previous#v}"
+
+          # Every subject pushed, not just the head commit.
+          if [ "$EVENT" = workflow_dispatch ]; then
+            echo "!${MARKER}: manual" > subjects.txt
+          elif [ -n "$(echo "$BEFORE_SHA" | tr -d 0)" ] && git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
+            git log "$BEFORE_SHA..$GITHUB_SHA" --format=%s > subjects.txt
+          else
+            git log -1 --format=%s > subjects.txt
+          fi
+          cat subjects.txt
+          plan="$(node scripts/release-version.mjs --current "${previous:-0.0.0}" --subjects-file subjects.txt)"
+          field() { printf '%s\n' "$plan" | sed -n "s/^$1=//p"; }
+
+          if [ "$EVENT" = workflow_dispatch ] && [ "$MODE" = release ]; then
+            mode=release
+          elif [ "$EVENT" = push ] && [ "$(git show HEAD^:package.json | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).version')" != "$current" ]; then
+            mode=release # the release PR was merged
+          elif [ "$(field release)" = true ]; then
+            mode=pr
+          else
+            mode=none
+          fi
+
+          case "$mode" in
+            pr) version="$(field version)" ;;
+            release) version="$current" ;;
+          esac
+          case "${version:-}" in
+            *-alpha.*) channel=alpha ;;
+            *-beta.*) channel=beta ;;
+            *) channel=latest ;;
+          esac
+          {
+            echo "mode=$mode"
+            echo "marker=$(field marker)"
+            echo "version=${version:-}"
+            echo "previous=$previous"
+            echo "channel=$channel"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      # Before publishing, not after.
+      - name: Check the secrets this release needs
+        if: steps.plan.outputs.mode == 'release'
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          [ -n "$NPM_TOKEN" ] || { echo "::error::Missing repository secret NPM_TOKEN (see docs/RELEASE.md)"; exit 1; }
+
+  # --- Step 1: the release PR ------------------------------------------------
+
+  release-pr:
+    name: Release PR for v${{ needs.plan.outputs.version }}
+    needs: plan
+    if: needs.plan.outputs.mode == 'pr'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Bump the version
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: node scripts/set-version.mjs "$VERSION"
+
+      - name: Write the CHANGELOG entry
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          PREVIOUS: ${{ needs.plan.outputs.previous }}
+        run: |
+          {
+            echo "## v${VERSION} ($(date -u +%Y-%m-%d))"
+            echo
+            git log ${PREVIOUS:+"v${PREVIOUS}..HEAD"} --no-merges --format='- %s' | grep -v '^- chore(release)' || true
+            echo
+            cat CHANGELOG.md 2>/dev/null || true
+          } > CHANGELOG.next.md
+          mv CHANGELOG.next.md CHANGELOG.md
+
+      - name: Open or update the release PR
+        id: pr
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          commit-message: 'chore(release): v${{ needs.plan.outputs.version }}'
+          title: 'chore(release): v${{ needs.plan.outputs.version }}'
+          body: |
+            Automated release PR, opened by a `!${{ needs.plan.outputs.marker }}` marker on master.
+
+            | | |
+            | --- | --- |
+            | From | `${{ needs.plan.outputs.previous || 'nothing released yet' }}` |
+            | To | `${{ needs.plan.outputs.version }}` |
+            | npm tag | `${{ needs.plan.outputs.channel }}` |
+
+            The CHANGELOG diff is the release note; edit it in this branch if it reads badly.
+
+            **Merging this PR is what releases.** Closing it releases nothing.
+          branch: chore/release-v${{ needs.plan.outputs.version }}
+          base: master
+          delete-branch: true
+
+      - name: Ensure the PR exists
+        if: steps.pr.outputs.pull-request-number == ''
+        run: |
+          echo "::error::No release PR was created. Allow GitHub Actions to create pull requests (Settings > Actions > General) or add a RELEASE_TOKEN secret."
+          exit 1
+
+      - run: echo "Release PR ${{ steps.pr.outputs.pull-request-url }}" >> "$GITHUB_STEP_SUMMARY"
+
+  # --- Step 2: merging that PR is the release --------------------------------
+
+  publish:
+    name: Publish v${{ needs.plan.outputs.version }}
+    needs: plan
+    if: needs.plan.outputs.mode == 'release'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      CHANNEL: ${{ needs.plan.outputs.channel }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Smoke test the CLI
+        run: |
+          node bin/nonap.js --version
+          node bin/nonap.js --help > /dev/null
+
+      # A retry skips what already went out.
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if npm view "nonap@$VERSION" version > /dev/null 2>&1; then
+            echo "nonap@$VERSION is already on npm"
+          else
+            npm publish --tag "$CHANNEL" --provenance --access public
+          fi
+
+      - name: GitHub Release
+        run: |
+          if gh release view "v$VERSION" > /dev/null 2>&1; then
+            echo "Release v$VERSION already exists"
+          else
+            awk -v h="## v$VERSION " 'index($0, h) == 1 { on = 1; next } /^## v/ { on = 0 } on' CHANGELOG.md > notes.md
+            {
+              echo
+              echo "Install: \`npm install -g nonap@$CHANNEL\`"
+            } >> notes.md
+            gh release create "v$VERSION" --target "$GITHUB_SHA" --title "v$VERSION" --notes-file notes.md \
+              $([ "$CHANNEL" = latest ] && echo --latest || echo --prerelease)
+          fi
