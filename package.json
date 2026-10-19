@@ -1,0 +1,23 @@
+{
+  "name": "nonap",
+  "version": "1.0.0",
+  "description": "Tiny, zero-dependency CLI mouse wiggler that keeps your machine awake",
+  "bin": {
+    "nonap": "bin/nonap.js"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "mouse",
+    "jiggler",
+    "wiggler",
+    "keep-awake",
+    "cli"
+  ],
+  "license": "MIT"
+}
