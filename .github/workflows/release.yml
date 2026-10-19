@@ -89,7 +89,7 @@ jobs:
 
           if [ "$EVENT" = workflow_dispatch ] && [ "$MODE" = release ]; then
             mode=release
-          elif [ "$EVENT" = push ] && [ "$(git show HEAD^:package.json | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).version')" != "$current" ]; then
+          elif [ "$EVENT" = push ] && [ "$current" != 0.0.0 ] && [ "$(git show HEAD^:package.json | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).version')" != "$current" ]; then
             mode=release # the release PR was merged
           elif [ "$(field release)" = true ]; then
             mode=pr
