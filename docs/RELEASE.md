@@ -40,7 +40,7 @@ npm pack --dry-run
 ## Users
 
 ```sh
-npm install -g nonap          # latest (stable)
-npm install -g nonap@beta
-npm install -g nonap@alpha
+npm install -g @aiyu-ayaan/nonap          # latest (stable)
+npm install -g @aiyu-ayaan/nonap@beta
+npm install -g @aiyu-ayaan/nonap@alpha
 ```

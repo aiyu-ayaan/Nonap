@@ -7,7 +7,7 @@ Each wiggle moves the cursor a pixel or so and straight back, so the final posit
 ## Install
 
 ```sh
-npm install -g nonap
+npm install -g @aiyu-ayaan/nonap
 ```
 
 Or from a clone: `npm link`.

@@ -215,8 +215,8 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          if npm view "nonap@$VERSION" version > /dev/null 2>&1; then
-            echo "nonap@$VERSION is already on npm"
+          if npm view "@aiyu-ayaan/nonap@$VERSION" version > /dev/null 2>&1; then
+            echo "@aiyu-ayaan/nonap@$VERSION is already on npm"
           else
             npm publish --tag "$CHANNEL" --provenance --access public
           fi
@@ -229,7 +229,7 @@ jobs:
             awk -v h="## v$VERSION " 'index($0, h) == 1 { on = 1; next } /^## v/ { on = 0 } on' CHANGELOG.md > notes.md
             {
               echo
-              echo "Install: \`npm install -g nonap@$CHANNEL\`"
+              echo "Install: \`npm install -g @aiyu-ayaan/nonap@$CHANNEL\`"
             } >> notes.md
             gh release create "v$VERSION" --target "$GITHUB_SHA" --title "v$VERSION" --notes-file notes.md \
               $([ "$CHANNEL" = latest ] && echo --latest || echo --prerelease)
